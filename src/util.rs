@@ -115,10 +115,7 @@ pub fn time_to_unix(time: SystemTime) -> Duration {
 }
 
 pub fn time_to_unix_ms(time: SystemTime) -> u64 {
-    time_to_unix(time)
-        .as_millis()
-        .try_into()
-        .expect(CLOCK_TOO_LATE)
+    unix_to_ms(time_to_unix(time))
 }
 
 pub fn unix_to_ms(unix: Duration) -> u64 {

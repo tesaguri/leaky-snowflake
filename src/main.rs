@@ -12,6 +12,7 @@ use getopts::Options;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<ExitCode> {
+    tracing_subscriber::fmt::init();
     let args = match process_args(env::args_os())? {
         ControlFlow::Continue(args) => args,
         ControlFlow::Break(code) => return Ok(code),
