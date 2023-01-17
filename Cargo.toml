@@ -8,6 +8,7 @@ publish = false
 anyhow = "1"
 bytes = "1"
 futures-util = "0.3"
+getopts = "0.2"
 http-body-util = "0.1.0-rc.2"
 hyper = { version = "1.0.0-rc.2", features = ["client", "http2"] }
 oauth = { version = "0.6", package = "oauth1-request" }
