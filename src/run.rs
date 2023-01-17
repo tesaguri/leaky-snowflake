@@ -1,0 +1,193 @@
+use std::io::{stdout, Write};
+use std::mem;
+use std::time::{Duration, Instant, SystemTime};
+
+use anyhow::Context;
+
+use crate::api::{self, ListsStatuses, Tweet};
+use crate::util::{self, SliceIsSortedExt};
+
+const MAX_TIMELINE_LEN: usize = 200;
+const INTERVAL: Duration = Duration::from_secs(1);
+
+pub struct Args {
+    pub list_id: u64,
+    pub k_ms: u64,
+    pub token: oauth::Token,
+}
+
+pub async fn run(
+    Args {
+        list_id,
+        k_ms,
+        token,
+    }: Args,
+) -> anyhow::Result<()> {
+    let mut request_sender = util::http2_connect(api::HOST, util::HTTPS_DEFAULT_PORT).await?;
+
+    let (start_ms, mut interval) = {
+        // Start the interval at exactly the beginning of a second of the clock
+        // to make the output a bit cleaner and maybe to make the rate-limit
+        // behavior and the experiment condition more consistent (e.g. speed
+        // of the TL might be biased by subsecond values of the clock).
+        let now_sys = SystemTime::now();
+        let now = Instant::now();
+        let now_unix = util::time_to_unix(now_sys);
+        let now_subsec = now_unix - Duration::from_secs(now_unix.as_secs());
+        let wait = Duration::from_secs(1) - now_subsec;
+        let start = now + wait;
+        let start_ms = util::unix_to_ms(now_unix + wait);
+        (start_ms, tokio::time::interval_at(start.into(), INTERVAL))
+    };
+
+    struct State {
+        timeline: Vec<Tweet>,
+        latest_id: u64,
+        retrieved_ms: u64,
+    }
+
+    impl State {
+        fn next_since_id(&self, k_ms: u64) -> u64 {
+            let lower = (((self.latest_id >> 22) - k_ms) << 22) - 1;
+            (util::unix_ms_to_sf(self.retrieved_ms - k_ms) - 1).clamp(lower, self.latest_id)
+        }
+    }
+
+    let mut nth = 0;
+    let mut timeline: Vec<Tweet> = Vec::with_capacity(MAX_TIMELINE_LEN);
+    let mut previous: Option<State> = None;
+    loop {
+        interval.tick().await;
+        nth += 1;
+
+        let mut request = ListsStatuses::new(list_id);
+        if let Some(ref previous) = previous {
+            request
+                .count(MAX_TIMELINE_LEN)
+                .since_id(Some(previous.next_since_id(k_ms)));
+        } else {
+            // Only get one Tweet to populate `latest_id` first.
+            request.count(1);
+        }
+
+        let retrieved_ms = util::time_to_unix_ms(SystemTime::now());
+        tracing::info!(?request, %retrieved_ms, "Initiating API request");
+        let result = request.send(&token, &mut request_sender).await;
+        match result {
+            Ok(body) => {
+                timeline.clear();
+                let mut deserializer = serde_json::Deserializer::from_slice(&body);
+                util::deserialize_into_vec(&mut timeline, &mut deserializer)
+                    .and_then(|()| deserializer.end())
+                    .context("Twitter responded with unexpected format")?;
+                tracing::info!(?timeline, "Request succeeded");
+            }
+            Err(cause) if cause.is::<hyper::Error>() => {
+                tracing::error!(%cause, "Error in HTTP connection");
+                // Attempt to reconnect
+                request_sender = util::http2_connect(api::HOST, util::HTTPS_DEFAULT_PORT).await?;
+                continue;
+            }
+            Err(cause) => {
+                tracing::error!(%cause, "Error in API request");
+                continue;
+            }
+        };
+
+        // Make sure the TL is sorted in reverse chronological order, just in case.
+        // ... Well, reverse Snowflake ID order, I mean.
+        #[allow(unstable_name_collisions)]
+        if !timeline.is_sorted_by(|t, u| Some(t.cmp_rev_id(u))) {
+            tracing::warn!("response is not sorted");
+            timeline.sort_unstable_by(Tweet::cmp_rev_id);
+        }
+
+        if let Some(ref previous) = previous {
+            // Check if we've missed any Tweets in the previous request
+            // whose ID is less than the largest one retrieved before.
+
+            // First, slice the timelines so that they only contain IDs in the
+            // range of `(since_id, latest_id]`. Note that the ordering of the
+            // timelines and hence the slicing ranges are reversed ones.
+            let old = {
+                let seek = previous.next_since_id(k_ms);
+                let i = previous
+                    .timeline
+                    .binary_search_by(move |t| seek.cmp(&t.id))
+                    .unwrap_or_else(|i| i);
+                &previous.timeline[..i]
+            };
+            let new = {
+                let seek = previous.latest_id;
+                let i = timeline
+                    .binary_search_by(move |t| seek.cmp(&t.id))
+                    .unwrap_or_else(|i| i);
+                &timeline[i..]
+            };
+
+            // Next, search for a "leaked" Tweet...
+            if let Some(leaked) = util::first_diff_sorted_by(new, old, |t, u| t.cmp_rev_id(u)) {
+                // Gotcha!
+                tracing::info!(id = %leaked.id, "Observed a leaked status");
+
+                // Now, report the results and call it a day.
+                #[derive(serde::Serialize)]
+                struct Output<'a> {
+                    k_ms: u64,
+                    start_ms: u64,
+                    nth: u64,
+                    previous: Previous<'a>,
+                    latest: Latest<'a>,
+                }
+                #[derive(serde::Serialize)]
+                struct Previous<'a> {
+                    retrieved_ms: u64,
+                    latest_id: u64,
+                    statuses: &'a [Tweet],
+                }
+                #[derive(serde::Serialize)]
+                struct Latest<'a> {
+                    retrieved_ms: u64,
+                    statuses: &'a [Tweet],
+                }
+                let output = Output {
+                    k_ms,
+                    start_ms,
+                    nth,
+                    previous: Previous {
+                        retrieved_ms: previous.retrieved_ms,
+                        latest_id: previous.latest_id,
+                        statuses: &previous.timeline,
+                    },
+                    latest: Latest {
+                        retrieved_ms,
+                        statuses: &timeline,
+                    },
+                };
+
+                let mut stdout = stdout().lock();
+                serde_json::to_writer(&mut stdout, &output)?;
+                writeln!(stdout).unwrap();
+
+                return Ok(());
+            }
+        }
+
+        if let Some(ref mut previous) = previous {
+            match *previous.timeline {
+                [ref t, ..] if t.id > previous.latest_id => {
+                    previous.latest_id = t.id;
+                }
+                _ => {}
+            }
+            previous.retrieved_ms = retrieved_ms;
+            mem::swap(&mut previous.timeline, &mut timeline);
+        } else if timeline.len() > 0 {
+            previous = Some(State {
+                timeline: mem::replace(&mut timeline, Vec::with_capacity(MAX_TIMELINE_LEN)),
+                latest_id: timeline[0].id,
+                retrieved_ms,
+            });
+        }
+    }
+}
