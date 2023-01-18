@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 bytes = "1"
+dirs = "4"
 futures-util = "0.3"
 getopts = "0.2"
 http-body-util = "0.1.0-rc.2"
@@ -14,6 +15,7 @@ hyper = { version = "1.0.0-rc.2", features = ["client", "http2"] }
 oauth = { version = "0.6", package = "oauth1-request" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 tokio-native-tls = "0.3"
 tracing = { version = "0.1", features = ["attributes"] }

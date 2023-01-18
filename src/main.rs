@@ -1,9 +1,11 @@
 mod api;
 mod run;
+mod twurlrc;
 mod util;
 
 use std::env;
 use std::fs::File;
+use std::io;
 use std::io::BufReader;
 use std::ops::ControlFlow;
 use std::process::ExitCode;
@@ -27,7 +29,7 @@ fn process_args(mut args: env::ArgsOs) -> anyhow::Result<ControlFlow<ExitCode, r
     opts.optopt(
         "",
         "credentials",
-        "path to API credentials file (default: `credentials.json`)",
+        "path to API credentials file (default: reads from `$HOME/.twurlrc` if any)",
         "FILE",
     );
     opts.optopt(
@@ -55,35 +57,51 @@ fn process_args(mut args: env::ArgsOs) -> anyhow::Result<ControlFlow<ExitCode, r
         return Ok(ControlFlow::Break(ExitCode::FAILURE));
     };
 
-    let owned;
-    let credentials = if let Some(s) = matches.opt_str("credentials") {
-        owned = s;
-        &owned
-    } else {
-        "credentials.json"
-    };
-
     let k_ms = matches.opt_get_default("k", 1000)?;
 
-    #[derive(serde::Deserialize)]
-    struct Credentials {
-        consumer_key: String,
-        consumer_secret: String,
-        access_token: String,
-        access_token_secret: String,
-    }
-    let Credentials {
-        consumer_key,
-        consumer_secret,
-        access_token,
-        access_token_secret,
-    } = serde_json::from_reader(BufReader::new(File::open(credentials)?))?;
-    let token = oauth::Token::from_parts(
-        consumer_key,
-        consumer_secret,
-        access_token,
-        access_token_secret,
-    );
+    let token = if let Some(credentials) = matches.opt_str("credentials") {
+        #[derive(serde::Deserialize)]
+        struct Credentials {
+            consumer_key: String,
+            consumer_secret: String,
+            access_token: String,
+            access_token_secret: String,
+        }
+        let Credentials {
+            consumer_key,
+            consumer_secret,
+            access_token,
+            access_token_secret,
+        } = serde_json::from_reader(BufReader::new(File::open(credentials)?))?;
+        oauth::Token::from_parts(
+            consumer_key,
+            consumer_secret,
+            access_token,
+            access_token_secret,
+        )
+    } else if let Some(f) = dirs::home_dir()
+        .and_then(|mut home| {
+            home.push(".twurlrc");
+            match File::open(&home) {
+                Ok(f) => Some(Ok(f)),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => Some(Err(e)),
+            }
+        })
+        .transpose()?
+    {
+        let profile: twurlrc::DefaultProfile = serde_yaml::from_reader(f)?;
+        tracing::info!(
+            profile.username,
+            "Using default credentials from `.twurlrc`"
+        );
+        profile.token
+    } else {
+        let program = program.to_string_lossy();
+        println!("{}: missing `--credential` option and `.twurlrc`", program);
+        print_usage(&program, &opts);
+        return Ok(ControlFlow::Break(ExitCode::FAILURE));
+    };
 
     Ok(ControlFlow::Continue(run::Args {
         list_id,
