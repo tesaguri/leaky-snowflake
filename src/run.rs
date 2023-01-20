@@ -5,6 +5,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Context;
 use bytes::Bytes;
+use http::header::HeaderValue;
 use http_body_util::Empty;
 use hyper::client::conn::http2::SendRequest;
 
@@ -17,12 +18,23 @@ const INTERVAL: Duration = Duration::from_secs(1);
 pub struct Args {
     pub list_id: u64,
     pub k_ms: u64,
-    pub token: oauth::Token,
+    pub bearer: HeaderValue,
 }
 
-#[tracing::instrument(skip_all, fields(list_id = %args.list_id, k_ms = %args.k_ms))]
-pub async fn run(args: Args) -> anyhow::Result<()> {
-    let mut request_sender = util::http2_connect(api::HOST, util::HTTPS_DEFAULT_PORT).await?;
+#[tracing::instrument(skip(bearer))]
+pub async fn run(
+    Args {
+        list_id,
+        k_ms,
+        bearer,
+    }: Args,
+) -> anyhow::Result<()> {
+    let mut nth = 1;
+    let mut request = ListsStatuses::new(list_id);
+    let mut timeline = Vec::with_capacity(MAX_TIMELINE_LEN);
+    let mut previous_state: Option<State> = None;
+    let mut request_sender =
+        util::http2_connect(api::DEFAULT_HOST, util::HTTPS_DEFAULT_PORT).await?;
 
     let (start_ms, mut interval) = {
         // Start the interval at exactly the beginning of a second of the clock
@@ -39,16 +51,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         (start_ms, tokio::time::interval_at(start.into(), INTERVAL))
     };
 
-    let mut nth = 1;
-    let mut timeline = Vec::with_capacity(MAX_TIMELINE_LEN);
-    let mut previous_state: Option<State> = None;
     loop {
         interval.tick().await;
-        if let ControlFlow::Break(()) = request(
-            &args,
+        if let ControlFlow::Break(()) = poll(
+            k_ms,
             start_ms,
             nth,
+            &bearer,
             &mut previous_state,
+            &mut request,
             &mut timeline,
             &mut request_sender,
         )
@@ -76,19 +87,16 @@ impl State {
 }
 
 #[tracing::instrument(skip_all, fields(nth, latest_id = previous_state.as_ref().map(|s| s.latest_id)))]
-async fn request(
-    &Args {
-        list_id,
-        k_ms,
-        ref token,
-    }: &Args,
+async fn poll(
+    k_ms: u64,
     start_ms: u64,
     nth: u64,
+    bearer: &HeaderValue,
     previous_state: &mut Option<State>,
+    request: &mut ListsStatuses,
     timeline: &mut Vec<Tweet>,
     request_sender: &mut SendRequest<Empty<Bytes>>,
 ) -> anyhow::Result<ControlFlow<()>> {
-    let mut request = ListsStatuses::new(list_id);
     if let Some(ref previous) = *previous_state {
         request
             .count(MAX_TIMELINE_LEN)
@@ -100,7 +108,7 @@ async fn request(
 
     let retrieved_ms = util::time_to_unix_ms(SystemTime::now());
     tracing::info!(?request, %retrieved_ms, "Initiating API request");
-    let result = request.send(&token, request_sender).await;
+    let result = request.send(bearer.clone(), request_sender).await;
     match result {
         Ok(body) => {
             timeline.clear();
@@ -113,7 +121,8 @@ async fn request(
         Err(cause) if cause.is::<hyper::Error>() => {
             tracing::error!(%cause, "Error in HTTP connection");
             // Attempt to reconnect
-            *request_sender = util::http2_connect(api::HOST, util::HTTPS_DEFAULT_PORT).await?;
+            *request_sender =
+                util::http2_connect(api::DEFAULT_HOST, util::HTTPS_DEFAULT_PORT).await?;
             return Ok(ControlFlow::Continue(()));
         }
         Err(cause) => {
