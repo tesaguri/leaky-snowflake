@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
 use std::fmt::Write;
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
+use either::Either;
 use http::header::{self, HeaderValue};
 use http::uri::{self, Uri};
 use http::{Request, StatusCode};
@@ -12,6 +13,9 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_HOST: &'static str = "api.twitter.com";
 
 const AUTHORITY: HeaderValue = HeaderValue::from_static(DEFAULT_HOST);
+
+type Body =
+    Either<bytes::buf::Reader<Bytes>, flate2::bufread::GzDecoder<bytes::buf::Reader<Bytes>>>;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Tweet {
@@ -83,13 +87,17 @@ impl ListsStatuses {
         self.uri = Uri::from_parts(parts).unwrap();
     }
 
+    #[tracing::instrument(level = "trace", skip(bearer, request_sender))]
     pub async fn send(
         &self,
         bearer: HeaderValue,
         request_sender: &mut SendRequest<Empty<Bytes>>,
-    ) -> anyhow::Result<Bytes> {
+    ) -> anyhow::Result<Body> {
+        const GZIP: HeaderValue = HeaderValue::from_static("gzip");
+
         let request = Request::get(self.uri.clone())
             .header(header::HOST, AUTHORITY)
+            .header(header::ACCEPT_ENCODING, GZIP)
             .header(header::AUTHORIZATION, bearer)
             .body(Empty::<Bytes>::new())
             .unwrap();
@@ -99,7 +107,18 @@ impl ListsStatuses {
             anyhow::bail!("Bad status: {}", response.status());
         }
 
+        let br = response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .map_or(false, |v| v == GZIP);
+
         let body = response.into_body().collect().await?.to_bytes();
+        let body = if br {
+            Either::Right(flate2::bufread::GzDecoder::new(body.reader()))
+        } else {
+            tracing::debug!("Response is in `identity` encoding");
+            Either::Left(body.reader())
+        };
 
         Ok(body)
     }

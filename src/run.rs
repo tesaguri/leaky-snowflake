@@ -112,7 +112,7 @@ async fn poll(
     match result {
         Ok(body) => {
             timeline.clear();
-            let mut deserializer = serde_json::Deserializer::from_slice(&body);
+            let mut deserializer = serde_json::Deserializer::from_reader(body);
             util::deserialize_into_vec(timeline, &mut deserializer)
                 .and_then(|()| deserializer.end())
                 .context("Twitter responded with unexpected format")?;
