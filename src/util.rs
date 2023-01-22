@@ -1,3 +1,5 @@
+mod tokiort;
+
 use std::cmp::Ordering;
 use std::fmt;
 use std::time::{Duration, SystemTime};
@@ -6,6 +8,8 @@ use bytes::Bytes;
 use futures_util::FutureExt;
 use http_body_util::Empty;
 use serde::de;
+
+use self::tokiort::TokioExecutor;
 
 pub const HTTPS_DEFAULT_PORT: u16 = 443;
 
@@ -98,7 +102,10 @@ pub async fn http2_connect(
             .expect("Error initializing TLS connector")
             .into();
     let stream = tls_connector.connect(host, stream).await?;
-    let (ret, conn) = hyper::client::conn::http2::handshake(stream).await?;
+    let (ret, conn) = hyper::client::conn::http2::Builder::new()
+        .executor(TokioExecutor)
+        .handshake(stream)
+        .await?;
 
     tokio::spawn(conn.map(|result| {
         if let Err(e) = result {
