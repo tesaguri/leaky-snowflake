@@ -1,25 +1,4 @@
-[package]
-name = "leaky-snowflake-experiment"
-version = "0.0.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-anyhow = "1"
-bytes = "1"
-dirs = "4"
-either = "1"
-flate2 = "1"
-futures-util = "0.3"
-getopts = "0.2"
-http = "0.2"
-http-body-util = "0.1.0-rc.2"
-hyper = { version = "1.0.0-rc.2", features = ["client", "http2"] }
-pin-project-lite = "0.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
-tokio-native-tls = "0.3"
-tracing = { version = "0.1", features = ["attributes"] }
-tracing-subscriber = "0.3"
+[workspace]
+members = [
+  "observer",
+]
