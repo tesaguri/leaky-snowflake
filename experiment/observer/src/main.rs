@@ -10,7 +10,6 @@ use std::io::BufReader;
 use std::ops::ControlFlow;
 use std::process::ExitCode;
 
-use anyhow::Context;
 use getopts::Options;
 
 #[tokio::main]
@@ -60,14 +59,26 @@ fn process_args(mut args: env::ArgsOs) -> anyhow::Result<ControlFlow<ExitCode, r
 
     let k_ms = matches.opt_get_default("k", 1000)?;
 
-    let bearer_token = if let Some(credentials) = matches.opt_str("credentials") {
+    let token = if let Some(credentials) = matches.opt_str("credentials") {
         #[derive(serde::Deserialize)]
         struct Credentials {
-            bearer_token: String,
+            consumer_key: String,
+            consumer_secret: String,
+            access_token: String,
+            access_token_secret: String,
         }
-        let Credentials { bearer_token } =
-            serde_json::from_reader(BufReader::new(File::open(credentials)?))?;
-        bearer_token
+        let Credentials {
+            consumer_key,
+            consumer_secret,
+            access_token,
+            access_token_secret,
+        } = serde_json::from_reader(BufReader::new(File::open(credentials)?))?;
+        oauth::Token::from_parts(
+            consumer_key,
+            consumer_secret,
+            access_token,
+            access_token_secret,
+        )
     } else if let Some(f) = dirs::home_dir()
         .and_then(|mut home| {
             home.push(".twurlrc");
@@ -84,7 +95,7 @@ fn process_args(mut args: env::ArgsOs) -> anyhow::Result<ControlFlow<ExitCode, r
             profile.username,
             "Using default credentials from `.twurlrc`"
         );
-        profile.bearer_token
+        profile.token
     } else {
         let program = program.to_string_lossy();
         println!("{}: missing `--credential` option and `.twurlrc`", program);
@@ -92,14 +103,10 @@ fn process_args(mut args: env::ArgsOs) -> anyhow::Result<ControlFlow<ExitCode, r
         return Ok(ControlFlow::Break(ExitCode::FAILURE));
     };
 
-    let bearer = format!("Bearer {}", bearer_token)
-        .try_into()
-        .context("Invalid bearer value")?;
-
     Ok(ControlFlow::Continue(run::Args {
         list_id,
         k_ms,
-        bearer,
+        token,
     }))
 }
 

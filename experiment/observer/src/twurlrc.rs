@@ -5,13 +5,22 @@ use serde::Deserialize;
 
 pub struct DefaultProfile {
     pub username: String,
-    pub bearer_token: String,
+    pub token: oauth::Token,
 }
 
 #[derive(Deserialize)]
 struct Twurlrc {
+    profiles: HashMap<String, HashMap<String, Profile>>,
     configuration: Configuration,
-    bearer_tokens: HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct Profile {
+    username: String,
+    consumer_key: String,
+    consumer_secret: String,
+    token: String,
+    secret: String,
 }
 
 #[derive(Deserialize)]
@@ -22,21 +31,32 @@ struct Configuration {
 impl<'de> Deserialize<'de> for DefaultProfile {
     fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let Twurlrc {
+            mut profiles,
             configuration:
                 Configuration {
                     default_profile: (username, consumer),
                 },
-            mut bearer_tokens,
         } = Twurlrc::deserialize(d)?;
-        let bearer_token = if let Some(bearer_token) = bearer_tokens.remove(&consumer) {
-            bearer_token
+        let mut consumers = if let Some(consumers) = profiles.remove(&username) {
+            consumers
         } else {
-            return Err(D::Error::custom("missing default app in `bearer_tokens`"));
+            return Err(D::Error::custom(format_args!(
+                "missing default user @{} in `profiles`",
+                username
+            )));
+        };
+        let p = if let Some(profile) = consumers.remove(&consumer) {
+            profile
+        } else {
+            return Err(D::Error::custom(format_args!(
+                "missing default app in `profiles.{}`",
+                username
+            )));
         };
 
-        Ok(DefaultProfile {
-            username,
-            bearer_token,
-        })
+        let username = p.username;
+        let token = oauth::Token::from_parts(p.consumer_key, p.consumer_secret, p.token, p.secret);
+
+        Ok(DefaultProfile { username, token })
     }
 }
