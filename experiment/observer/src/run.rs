@@ -89,13 +89,9 @@ async fn request(
     request_sender: &mut SendRequest<Empty<Bytes>>,
 ) -> anyhow::Result<ControlFlow<()>> {
     let mut request = ListsStatuses::new(list_id);
+    request.count(MAX_TIMELINE_LEN);
     if let Some(ref previous) = *previous_state {
-        request
-            .count(MAX_TIMELINE_LEN)
-            .since_id(Some(previous.next_since_id(k_ms)));
-    } else {
-        // Only get one Tweet to populate `latest_id` first.
-        request.count(1);
+        request.since_id(Some(previous.next_since_id(k_ms)));
     }
 
     let retrieved_ms = util::time_to_unix_ms(SystemTime::now());
