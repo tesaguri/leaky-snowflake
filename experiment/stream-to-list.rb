@@ -7,6 +7,7 @@
 
 list = Integer(ARGV[0])
 
+require 'logger'
 require 'net/http'
 require 'set'
 
@@ -14,6 +15,8 @@ require 'twitter'
 require 'twurl'
 
 MAX_LIST_LENGTH = 5000
+
+logger = Logger.new(STDERR)
 
 twurlrc = Twurl::RCFile.new
 (username, consumer_key) = twurlrc.default_profile
@@ -63,7 +66,7 @@ define_singleton_method('connect_stream') do
               begin
                 json = JSON.parse(line)
               rescue => e
-                STDERR.puts <<EOS
+                logger.error <<EOS
 Unable to parse stream message: #{e.class.name} (#{e.message})
 input=#{line}
 EOS
@@ -71,7 +74,7 @@ EOS
               end
 
               unless user = Integer(json&.[]('data')&.[]('author_id'), 10, exception: false)
-                STDERR.puts "Unknown stream message: #{line}"
+                logger.error "Unknown stream message: #{line}"
                 next
               end
 
@@ -108,13 +111,13 @@ until users.length >= MAX_LIST_LENGTH
 
   begin
     rest.add_list_member(list, current_user)
-    puts "+#{current_user}"
+    logger.info "Added to the List: #{current_user}"
     users.add current_user
     rejection_count = 0
   rescue Twitter::Error::TooManyRequests => e
     wait = e.rate_limit.reset_in
     yielder.kill if wait > KEEP_ALIVE
-    STDERR.puts "Will retry in #{wait} seconds..."
+    logger.info "Will retry in #{wait} seconds..."
     loop do
       sleep wait
       break if (wait = e.rate_limit.reset_in) <= 0
@@ -122,13 +125,13 @@ until users.length >= MAX_LIST_LENGTH
     # Dropping the current user as we're going to have a bunch of new users anyway
     next
   rescue Twitter::Error => e
-    STDERR.puts "Unable to add user `#{current_user}` to the List: #{e.class.name} (#{e.message})"
+    logger.error "Unable to add user `#{current_user}` to the List: #{e.class.name} (#{e.message})"
     if e.is_a? Twitter::Error::Forbidden
       # Twitter seems to reject bulk additions to a List with 403
       wait = 1 << rejection_count
       yielder.kill if wait > KEEP_ALIVE
       retry_at = Time.now + wait
-      STDERR.puts "Will retry in #{wait} seconds..."
+      logger.info "Will retry in #{wait} seconds..."
       loop do
         sleep wait.ceil
         break if (wait = retry_at - Time.now) <= 0
