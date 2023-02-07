@@ -133,8 +133,9 @@ async fn request(
         // First, slice the timelines so that they only contain IDs in the range
         // of `(since_id, latest_id]`. Note that the ordering of the timelines
         // and hence the slicing ranges are reversed ones.
+        let since_id = previous.next_since_id(k_ms);
         let old = {
-            let seek = previous.next_since_id(k_ms);
+            let seek = since_id;
             let i = previous
                 .timeline
                 .binary_search_by(move |t| seek.cmp(&t.id))
@@ -160,6 +161,30 @@ async fn request(
             // Gotcha!
             tracing::info!(id = %leaked.id, "Observed a leaked status");
 
+            let magic = if since_id == previous.latest_id {
+                Some(true)
+            } else {
+                tracing::info!("Checking if the \"magic\" exists");
+                request.since_id(Some(previous.latest_id));
+                let result = request.send(&token, request_sender).await;
+                match result {
+                    Ok(body) => {
+                        let mut timeline = Vec::<Tweet>::new();
+                        let mut deserializer = serde_json::Deserializer::from_reader(body);
+                        util::deserialize_into_vec(&mut timeline, &mut deserializer)
+                            .and_then(|()| deserializer.end())
+                            .context("Twitter responded with unexpected format")?;
+                        tracing::info!(?timeline, "Request succeeded");
+                        Some(timeline.iter().any(|t| t.id == leaked.id))
+                    }
+                    Err(cause) => {
+                        // We're out of luck...
+                        tracing::error!(?cause, "Error in API request");
+                        None
+                    }
+                }
+            };
+
             // Now, report the results and call it a day.
             #[derive(serde::Serialize)]
             struct Output<'a> {
@@ -168,6 +193,7 @@ async fn request(
                 nth: u64,
                 previous: Previous<'a>,
                 latest: Latest<'a>,
+                magic: Option<bool>,
             }
             #[derive(serde::Serialize)]
             struct Previous<'a> {
@@ -193,6 +219,7 @@ async fn request(
                     retrieved_ms,
                     statuses: &timeline,
                 },
+                magic,
             };
 
             let mut stdout = stdout().lock();
