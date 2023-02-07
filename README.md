@@ -86,6 +86,12 @@ since_id = clamp(time2sf(retrieved_at - k) - 1, lower, latest_id)
 
 Note that this code still fetches duplicate Tweets, which your app needs to handle, although the amount is now minimal.
 
+## Concluding remarks
+
+In this article, we have demonstrated the problem of _timeline leaks_, where client apps pollong a timeline may miss Tweets that should otherwise fetched due to $k$-sortedness of Snowflake IDs and proposed a solution to the problem.
+
+However, the reasoning is purely theoretical so far. The [`experiment`](experiment/) directory contains an experimental code to see if the timeline leaks actually occur in Twitter API.
+
 ## License
 
 See [`COPYING.md`](COPYING.md) for the copyright notice and license of this article and the experiment code.
