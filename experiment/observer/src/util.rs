@@ -7,11 +7,16 @@ use std::time::{Duration, SystemTime};
 use bytes::Bytes;
 use futures_util::FutureExt;
 use http_body_util::Empty;
+use hyper::header::HeaderValue;
 use serde::de;
 
 use self::tokiort::TokioExecutor;
 
 pub const HTTPS_DEFAULT_PORT: u16 = 443;
+pub const USER_AGENT: HeaderValue = HeaderValue::from_static(concat!(
+    "leaky-snowflake-observer/",
+    env!("CARGO_PKG_VERSION")
+));
 
 const TWEPOCH: u64 = 1288834974657;
 

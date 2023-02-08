@@ -74,6 +74,8 @@ use hyper::header::{self, HeaderValue};
 use hyper::{Request, Response, Uri};
 use serde::{de::DeserializeSeed, Deserialize, Serialize};
 
+use crate::util;
+
 pub const HOST: &'static str = "api.twitter.com";
 
 const AUTHORITY: HeaderValue = HeaderValue::from_static(HOST);
@@ -155,6 +157,7 @@ where
             .header(header::HOST, AUTHORITY)
             .header(header::ACCEPT_ENCODING, GZIP)
             .header(header::AUTHORIZATION, authorization)
+            .header(header::USER_AGENT, util::USER_AGENT)
             .body(Empty::<Bytes>::new())
             .unwrap();
         request_sender.send_request(request)
