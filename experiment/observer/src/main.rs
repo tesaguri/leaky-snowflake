@@ -22,7 +22,9 @@ async fn main() -> anyhow::Result<ExitCode> {
     run::run(args).await.and(Ok(ExitCode::SUCCESS))
 }
 
-fn process_args(mut args: env::ArgsOs) -> anyhow::Result<ControlFlow<ExitCode, run::Args>> {
+fn process_args(
+    mut args: env::ArgsOs,
+) -> anyhow::Result<ControlFlow<ExitCode, run::Args<api::lists::Statuses>>> {
     let program = args.next().unwrap();
 
     let mut opts = Options::new();
@@ -56,6 +58,7 @@ fn process_args(mut args: env::ArgsOs) -> anyhow::Result<ControlFlow<ExitCode, r
         print_usage(&program, &opts);
         return Ok(ControlFlow::Break(ExitCode::FAILURE));
     };
+    let request = api::lists::Statuses::new(list_id);
 
     let k_ms = matches.opt_get_default("k", 1000)?;
 
@@ -102,9 +105,10 @@ fn process_args(mut args: env::ArgsOs) -> anyhow::Result<ControlFlow<ExitCode, r
         print_usage(&program, &opts);
         return Ok(ControlFlow::Break(ExitCode::FAILURE));
     };
+    let token = api::Token::from(token);
 
     Ok(ControlFlow::Continue(run::Args {
-        list_id,
+        request,
         k_ms,
         token,
     }))

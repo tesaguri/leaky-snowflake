@@ -22,6 +22,9 @@ const CLOCK_TOO_LATE: &str = r#"\
 Greetings from 2023 CE! Unfortunately, your system clock has exceeded the capacity of the clock of Twitter, \
 a social media service of our era, which this program is targeted at"#;
 
+/// A `DeserializeSeed` implementation that reuses the given vector to deserialize a sequence.
+pub struct DeserializeIntoVec<'a, T>(pub &'a mut Vec<T>);
+
 /// Polyfill for the unstable `<[T]>::is_sorted_by` method.
 ///
 /// <https://github.com/rust-lang/rust/issues/53485>
@@ -38,36 +41,39 @@ impl<T> SliceIsSortedExt<T> for [T] {
     }
 }
 
-/// Deserializes a sequence from `deserializer`
-/// and appends the results to `vec`.
-pub fn deserialize_into_vec<'de, T, D>(vec: &mut Vec<T>, deserializer: D) -> Result<(), D::Error>
+impl<'de, 'a, T> de::DeserializeSeed<'de> for DeserializeIntoVec<'a, T>
 where
     T: de::Deserialize<'de>,
-    D: de::Deserializer<'de>,
 {
-    struct Visitor<'a, T: 'a>(&'a mut Vec<T>);
+    type Value = ();
 
-    impl<'de, 'a, T: de::Deserialize<'de>> de::Visitor<'de> for Visitor<'a, T> {
-        type Value = ();
+    fn deserialize<D: de::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        struct Visitor<'a, T: 'a>(&'a mut Vec<T>);
 
-        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a sequence")
-        }
+        impl<'de, 'a, T: de::Deserialize<'de>> de::Visitor<'de> for Visitor<'a, T> {
+            type Value = ();
 
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-            if let Some(hint) = seq.size_hint() {
-                self.0.reserve(hint);
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a sequence")
             }
 
-            while let Some(t) = seq.next_element()? {
-                self.0.push(t);
-            }
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+                self.0.clear();
 
-            Ok(())
+                if let Some(hint) = seq.size_hint() {
+                    self.0.reserve(hint);
+                }
+
+                while let Some(t) = seq.next_element()? {
+                    self.0.push(t);
+                }
+
+                Ok(())
+            }
         }
+
+        deserializer.deserialize_seq(Visitor(self.0))
     }
-
-    deserializer.deserialize_seq(Visitor(vec))
 }
 
 /// Returns the first element of the set difference `x - y`,

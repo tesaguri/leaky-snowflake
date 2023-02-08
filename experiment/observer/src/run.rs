@@ -1,27 +1,37 @@
+use std::fmt::Debug;
 use std::io::{stdout, Write};
+use std::marker::PhantomData;
 use std::mem;
 use std::ops::ControlFlow;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::Context;
 use bytes::Bytes;
 use http_body_util::Empty;
 use hyper::client::conn::http2::SendRequest;
 
-use crate::api::{self, ListsStatuses, Tweet};
+use crate::api::{self, TimelineRequest, Tweet};
 use crate::util::{self, SliceIsSortedExt};
 
 const MAX_TIMELINE_LEN: usize = 200;
 const INTERVAL: Duration = Duration::from_secs(1);
 
-pub struct Args {
-    pub list_id: u64,
+pub struct Args<R> {
+    pub request: R,
     pub k_ms: u64,
-    pub token: oauth::Token,
+    pub token: api::Token,
 }
 
-#[tracing::instrument(skip_all, fields(list_id = %args.list_id, k_ms = %args.k_ms))]
-pub async fn run(args: Args) -> anyhow::Result<()> {
+#[tracing::instrument(skip(token))]
+pub async fn run<R>(
+    Args {
+        mut request,
+        k_ms,
+        token,
+    }: Args<R>,
+) -> anyhow::Result<()>
+where
+    R: Debug + TimelineRequest,
+{
     let mut nth = 1;
     let mut request_sender = util::http2_connect(api::HOST, util::HTTPS_DEFAULT_PORT).await?;
 
@@ -44,8 +54,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let mut previous_state: Option<State> = None;
     loop {
         interval.tick().await;
-        if let ControlFlow::Break(()) = request(
-            &args,
+        if let ControlFlow::Break(()) = poll_timeline(
+            &mut request,
+            k_ms,
+            &token,
             start_ms,
             nth,
             &mut previous_state,
@@ -76,41 +88,39 @@ impl State {
 }
 
 #[tracing::instrument(skip_all, fields(nth, latest_id = previous_state.as_ref().map(|s| s.latest_id)))]
-async fn request(
-    &Args {
-        list_id,
-        k_ms,
-        ref token,
-    }: &Args,
+async fn poll_timeline<R>(
+    request: &mut R,
+    k_ms: u64,
+    token: &api::Token,
     start_ms: u64,
     nth: u64,
     previous_state: &mut Option<State>,
     timeline: &mut Vec<Tweet>,
     request_sender: &mut SendRequest<Empty<Bytes>>,
-) -> anyhow::Result<ControlFlow<()>> {
-    let mut request = ListsStatuses::new(list_id);
-    request.count(MAX_TIMELINE_LEN);
+) -> anyhow::Result<ControlFlow<()>>
+where
+    R: Debug + TimelineRequest,
+{
     if let Some(ref previous) = *previous_state {
-        request.since_id(Some(previous.next_since_id(k_ms)));
+        request.set_since_id(Some(previous.next_since_id(k_ms)));
     }
 
     let retrieved_ms = util::time_to_unix_ms(SystemTime::now());
     tracing::info!(?request, %retrieved_ms, "Initiating API request");
-    let result = request.send(&token, request_sender).await;
+    let result = request
+        .fetch(util::DeserializeIntoVec(timeline), &token, request_sender)
+        .await;
     match result {
-        Ok(body) => {
-            timeline.clear();
-            let mut deserializer = serde_json::Deserializer::from_reader(body);
-            util::deserialize_into_vec(timeline, &mut deserializer)
-                .and_then(|()| deserializer.end())
-                .context("Twitter responded with unexpected format")?;
-            tracing::info!(?timeline, "Request succeeded");
-        }
+        Ok(()) => tracing::info!(?timeline, "Request succeeded"),
         Err(cause) if cause.is::<hyper::Error>() => {
             tracing::error!(%cause, "Error in HTTP connection");
             // Attempt to reconnect
             *request_sender = util::http2_connect(api::HOST, util::HTTPS_DEFAULT_PORT).await?;
             return Ok(ControlFlow::Continue(()));
+        }
+        Err(cause) if cause.is::<serde_json::Error>() => {
+            tracing::error!("Twitter responded with unexpected format");
+            return Err(cause);
         }
         Err(cause) => {
             tracing::error!(%cause, "Error in API request");
@@ -165,15 +175,12 @@ async fn request(
                 Some(true)
             } else {
                 tracing::info!("Checking if the \"magic\" exists");
-                request.since_id(Some(previous.latest_id));
-                let result = request.send(&token, request_sender).await;
+                request.set_since_id(Some(previous.latest_id));
+                let result = request
+                    .fetch(PhantomData::<Vec<Tweet>>, &token, request_sender)
+                    .await;
                 match result {
-                    Ok(body) => {
-                        let mut timeline = Vec::<Tweet>::new();
-                        let mut deserializer = serde_json::Deserializer::from_reader(body);
-                        util::deserialize_into_vec(&mut timeline, &mut deserializer)
-                            .and_then(|()| deserializer.end())
-                            .context("Twitter responded with unexpected format")?;
+                    Ok(timeline) => {
                         tracing::info!(?timeline, "Request succeeded");
                         Some(timeline.iter().any(|t| t.id == leaked.id))
                     }
